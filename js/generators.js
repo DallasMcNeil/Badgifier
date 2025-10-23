@@ -164,7 +164,7 @@ function generatePersonInformation(index) {
 
     return {
         blank: isBlank,
-        name: name,
+        get name() {return name || settings.placeholderName},
         wcaid: wcaid,
         compid: compid,
         countryCode: countryCode,
@@ -250,7 +250,7 @@ function drawName(doc, text, align, x, y, w, h, latinFont = "NotoSans-Bold") {
 
 // Split a name so it fits evenly across two lines
 // h is height of one line
-function splitNameOntoTwoLines(doc, text, h) {
+function splitNameOntoTwoLines(doc, text, h, splitThreshold) {
     let fontSize = h * 2.2
     doc.saveGraphicsState()
 
@@ -271,17 +271,20 @@ function splitNameOntoTwoLines(doc, text, h) {
 
     if (textParts.length < 1) {
         doc.restoreGraphicsState()
-        return ["", ""]
+        return ["", "", 0, 0]
     } else if (textParts.length < 2) {
+        let textLength = doc.getTextWidth(textParts[0])
         doc.restoreGraphicsState()
-        return ["", text]
+        return ["", text, 0, textLength]
     }
 
     let textLengths = []
+    let hasLocalName = false
     for (let i = 0; i < textParts.length; i++) {
         const [, latinName, localName] = textParts[i].match(/(.*)\s*[(（](.+)[)）]/) || [null, textParts[i], null]
 
         if (localName && settings.includeLocalName) {
+            hasLocalName = true
             let localFont = determineFont(localName)
 
             // Include local names if we want them
@@ -308,15 +311,28 @@ function splitNameOntoTwoLines(doc, text, h) {
     doc.restoreGraphicsState()
 
     // Determine best way to split
-    let target = 0
+    let totalLength = 0
     for (let i = 0; i < textParts.length; i++) {
-        target += textLengths[i]
+        totalLength += textLengths[i]
     }
-    target /= 2
+    totalLength += (textParts.length - 1) * spaceLength
+    let target = (totalLength - spaceLength) / 2
+    if (splitThreshold && totalLength <= splitThreshold) {
+        return ["", textParts.join(" "), 0, totalLength]
+    }
+
+    if (hasLocalName) {
+        // If they have a local name, prefer to have it on its own line
+        let localNameLength = textLengths.at(-1)
+        let latinNameLength = totalLength - spaceLength - localNameLength
+        if (latinNameLength <= splitThreshold && localNameLength <= splitThreshold) {
+            return [textParts.slice(0, -1).join(" "), textParts.at(-1), latinNameLength, localNameLength]
+        }
+    }
 
     let firstLine = ""
-    let secondLine = textParts[textParts.length - 1]
-    let secondLineLength = textLengths[textParts.length - 1]
+    let secondLine = textParts.at(-1)
+    let secondLineLength = textLengths.at(-1)
     for (let i = textParts.length - 2; i >= 0; i--) {
         let nextLength = secondLineLength + spaceLength + textLengths[i]
         if (Math.abs(secondLineLength - target) <= Math.abs(nextLength - target)) {
@@ -333,7 +349,7 @@ function splitNameOntoTwoLines(doc, text, h) {
         }
     }
 
-    return [firstLine, secondLine]
+    return [firstLine, secondLine, totalLength - spaceLength - secondLineLength, secondLineLength]
 }
 
 // Draw a box with text in it
@@ -645,10 +661,11 @@ function addPortraitNameBadgeWithDimensions(doc, index, badgeWidth, badgeHeight,
 
         let nameStart = badgeHeight - 33
         // Place name, starting from bottom and adding extra lines on top for longer names
-        if (!info.blank) {
-            let textLines = splitNameOntoTwoLines(doc, info.name, 10)
-            drawName(doc, textLines[0], "center", 3, nameStart, halfWidth - 6, 10)
-            drawName(doc, textLines[1], "center", 3, nameStart + 9, halfWidth - 6, 10)
+        if (info.name) {
+            let [firstLine, secondLine, firstLineLength, secondLineLength] = splitNameOntoTwoLines(doc, info.name, 10, halfWidth - 6 + 1)
+            let scale = 1/Math.max(1, Math.max(firstLineLength, secondLineLength) / (halfWidth - 6))
+            drawName(doc, firstLine, "center", 3, nameStart, halfWidth - 6, 10 * scale)
+            drawName(doc, secondLine, "center", 3, nameStart + 9, halfWidth - 6, 10 * scale)
         }
 
         doc.setLineWidth(0.25)
@@ -671,7 +688,7 @@ function addPortraitNameBadgeWithDimensions(doc, index, badgeWidth, badgeHeight,
                 doc.setTextColor(0, 0, 196)
                 nameText = "NEWCOMER"
             }
-            if (settings.includeCompetitorId) {
+            if (settings.includeCompetitorId && info.compid) {
                 nameText += ` - ID ${info.compid}`
             }
 
@@ -681,7 +698,7 @@ function addPortraitNameBadgeWithDimensions(doc, index, badgeWidth, badgeHeight,
         }
         doc.setTextColor(0, 0, 0)
 
-        let logoHeight = Math.min(10, halfWidth / 7)
+        let logoHeight = Math.min(10, halfWidth / 8)
 
         // Add logos
         let wcaRatio = $("#wca-img").width() / $("#wca-img").height()
@@ -714,32 +731,34 @@ function addPortraitNameBadgeWithDimensions(doc, index, badgeWidth, badgeHeight,
 
         doc.setCurrentTransformationMatrix(new doc.Matrix(1, 0, 0, 1, mmToPdf(tx), mmToPdf(ty)))
 
-        // Place name
-        drawName(doc, info.name, "left", 3, 7, halfWidth - 12, 4)
+        if (info.compid !== null && info.compid !== '-') {
+            // Place name
+            drawName(doc, info.name, "left", 3, 7, halfWidth - 12, 4)
 
-        // Place registration id
-        doc.setFont("NotoSans-Regular")
-        doc.setFontSize(7)
-        doc.text(`${info.compid}`, halfWidth - 6, 6, {
-            align: "center",
-        })
-
-        // Place schedule
-        let height = drawSchedule(doc, 3, 10, halfWidth - 6, info)
-
-        // WCA Live QR code is assumed to be square
-        // We don't draw it if the schedule extended down too far
-        if (settings.showWcaLiveQrCode && (height + 10) < badgeHeight - 20) {
-            doc.addImage($("#qrcode-img")[0], "PNG", halfWidth - 18, badgeHeight - 18, 15, 15, "qrcode", "SLOW")
-            doc.setFontSize(8)
+            // Place registration id
             doc.setFont("NotoSans-Regular")
-            let wcaLiveLines = doc.splitTextToSize(settings.qrcodeMessage, halfWidth - 25)
-            let textHeight = wcaLiveLines.length * 4
-            let textStart = badgeHeight - 15 + ((15 - textHeight) / 2)
-            for (let i = 0; i < wcaLiveLines.length; i++) {
-                doc.text(wcaLiveLines[i], halfWidth - 20, textStart + (i * 4), {
-                    align: "right",
-                })
+            doc.setFontSize(7)
+            doc.text(`${info.compid}`, halfWidth - 6, 6, {
+                align: "center",
+            })
+
+            // Place schedule
+            let height = drawSchedule(doc, 3, 10, halfWidth - 6, info)
+
+            // WCA Live QR code is assumed to be square
+            // We don't draw it if the schedule extended down too far
+            if (settings.showWcaLiveQrCode && (height + 10) < badgeHeight - 20) {
+                doc.addImage($("#qrcode-img")[0], "PNG", halfWidth - 18, badgeHeight - 18, 15, 15, "qrcode", "SLOW")
+                doc.setFontSize(8)
+                doc.setFont("NotoSans-Regular")
+                let wcaLiveLines = doc.splitTextToSize(settings.qrcodeMessage, halfWidth - 25)
+                let textHeight = wcaLiveLines.length * 4
+                let textStart = badgeHeight - 15 + ((15 - textHeight) / 2)
+                for (let i = 0; i < wcaLiveLines.length; i++) {
+                    doc.text(wcaLiveLines[i], halfWidth - 20, textStart + (i * 4), {
+                        align: "right",
+                    })
+                }
             }
         }
 
@@ -807,7 +826,7 @@ function addLandscapeNameBadgeWithDimensions(doc, index, badgeWidth, badgeHeight
                 doc.setTextColor(0, 0, 196)
                 nameText = "NEWCOMER"
             }
-            if (settings.includeCompetitorId) {
+            if (settings.includeCompetitorId && info.compid) {
                 nameText += ` - ID ${info.compid}`
             }
 
@@ -819,7 +838,7 @@ function addLandscapeNameBadgeWithDimensions(doc, index, badgeWidth, badgeHeight
 
         // Add logos
         let wcaRatio = $("#wca-img").width() / $("#wca-img").height()
-        doc.addImage($("#wca-img")[0], "PNG", 3, halfWidth - 13, 10 * wcaRatio, 10, "wca", "SLOW")
+        doc.addImage($("#wca-img")[0], "PNG", 3, halfWidth - 13, 9 * wcaRatio, 9, "wca", "SLOW")
 
         if (settings.includeOrgLogo) {
             let orgRatio = $("#org-img").width() / $("#org-img").height()
@@ -848,32 +867,34 @@ function addLandscapeNameBadgeWithDimensions(doc, index, badgeWidth, badgeHeight
 
         doc.setCurrentTransformationMatrix(new doc.Matrix(1, 0, 0, 1, mmToPdf(tx), mmToPdf(ty)))
 
-        // Place name
-        drawName(doc, info.name, "left", 3, 7, halfWidth - 12, 4)
+        if (info.compid !== null && info.compid !== '-') {
+            // Place name
+            drawName(doc, info.name, "left", 3, 7, halfWidth - 12, 4)
 
-        // Place registration id
-        doc.setFont("NotoSans-Regular")
-        doc.setFontSize(7)
-        doc.text(`${info.compid}`, halfWidth - 6, 6, {
-            align: "center",
-        })
-
-        // Place schedule
-        let height = drawSchedule(doc, 3, 10, halfWidth - 6, info)
-
-        // WCA Live QR code is assumed to be square
-        // We don't draw it if the schedule extended down too far
-        if (settings.showWcaLiveQrCode && (height + 10) < badgeHeight - 20) {
-            doc.addImage($("#qrcode-img")[0], "PNG", halfWidth - 18, badgeHeight - 18, 15, 15, "qrcode", "SLOW")
-            doc.setFontSize(8)
+            // Place registration id
             doc.setFont("NotoSans-Regular")
-            let wcaLiveLines = doc.splitTextToSize(settings.qrcodeMessage, halfWidth - 25)
-            let textHeight = wcaLiveLines.length * 4
-            let textStart = badgeHeight - 15 + ((15 - textHeight) / 2)
-            for (let i = 0; i < wcaLiveLines.length; i++) {
-                doc.text(wcaLiveLines[i], halfWidth - 20, textStart + (i * 4), {
-                    align: "right",
-                })
+            doc.setFontSize(7)
+            doc.text(`${info.compid}`, halfWidth - 6, 6, {
+                align: "center",
+            })
+
+            // Place schedule
+            let height = drawSchedule(doc, 3, 10, halfWidth - 6, info)
+
+            // WCA Live QR code is assumed to be square
+            // We don't draw it if the schedule extended down too far
+            if (settings.showWcaLiveQrCode && (height + 10) < badgeHeight - 20) {
+                doc.addImage($("#qrcode-img")[0], "PNG", halfWidth - 18, badgeHeight - 18, 15, 15, "qrcode", "SLOW")
+                doc.setFontSize(8)
+                doc.setFont("NotoSans-Regular")
+                let wcaLiveLines = doc.splitTextToSize(settings.qrcodeMessage, halfWidth - 25)
+                let textHeight = wcaLiveLines.length * 4
+                let textStart = badgeHeight - 15 + ((15 - textHeight) / 2)
+                for (let i = 0; i < wcaLiveLines.length; i++) {
+                    doc.text(wcaLiveLines[i], halfWidth - 20, textStart + (i * 4), {
+                        align: "right",
+                    })
+                }
             }
         }
 
@@ -904,9 +925,10 @@ function addChampionshipPortraitNameBadge(doc, index) {
 
         // Place name, starting from bottom and adding extra lines on top for longer names
         if (!info.blank) {
-            let textLines = splitNameOntoTwoLines(doc, info.name, 15)
-            drawName(doc, textLines[0], "center", 5, 102, A6P_WIDTH - 10, 13)
-            drawName(doc, textLines[1], "center", 5, 112, A6P_WIDTH - 10, 13)
+            let [firstLine, secondLine, firstLineLength, secondLineLength] = splitNameOntoTwoLines(doc, info.name, 15, A6P_WIDTH - 10 + 1)
+            let scale = 1/Math.max(1, Math.max(firstLineLength, secondLineLength) / (A6P_WIDTH - 10))
+            drawName(doc, firstLine, "center", 5, 102, A6P_WIDTH - 10, 13*scale)
+            drawName(doc, secondLine, "center", 5, 102 + 10*scale, A6P_WIDTH - 10, 13*scale)
         }
 
         doc.setLineWidth(0.25)
@@ -929,7 +951,7 @@ function addChampionshipPortraitNameBadge(doc, index) {
                 doc.setTextColor(0, 0, 196)
                 nameText = "NEWCOMER"
             }
-            if (settings.includeCompetitorId) {
+            if (settings.includeCompetitorId && info.compid) {
                 nameText += ` - ID ${info.compid}`
             }
 
@@ -968,32 +990,34 @@ function addChampionshipPortraitNameBadge(doc, index) {
     {
         doc.saveGraphicsState()
 
-        // Place name
-        drawName(doc, info.name, "left", 6, 10, A6P_WIDTH - 20, 6)
+        if (info.compid !== null && info.compid !== '-') {
+            // Place name
+            drawName(doc, info.name, "left", 6, 10, A6P_WIDTH - 20, 6)
 
-        // Place registration id
-        doc.setFont("NotoSans-Regular")
-        doc.setFontSize(7)
-        doc.text(`${info.compid}`, A6P_WIDTH - 9, 8, {
-            align: "center",
-        })
-
-        // Place schedule
-        let height = drawSchedule(doc, 7, 15, A6P_WIDTH - 14, info, 1.2)
-
-        // WCA Live QR code is assumed to be square
-        // We don't draw it if the schedule extended down too far
-        if (settings.showWcaLiveQrCode && (height + 10) < A6P_HEIGHT - 30) {
-            doc.addImage($("#qrcode-img")[0], "PNG", A6P_WIDTH - 25, A6P_HEIGHT - 25, 20, 20, "qrcode", "SLOW")
-            doc.setFontSize(13)
+            // Place registration id
             doc.setFont("NotoSans-Regular")
-            let wcaLiveLines = doc.splitTextToSize(settings.qrcodeMessage, A6P_WIDTH - 35)
-            let textHeight = wcaLiveLines.length * 6
-            let textStart = A6P_HEIGHT - 20 + ((20 - textHeight) / 2)
-            for (let i = 0; i < wcaLiveLines.length; i++) {
-                doc.text(wcaLiveLines[i], A6P_WIDTH - 28, textStart + (i * 6), {
-                    align: "right",
-                })
+            doc.setFontSize(7)
+            doc.text(`${info.compid}`, A6P_WIDTH - 9, 8, {
+                align: "center",
+            })
+
+            // Place schedule
+            let height = drawSchedule(doc, 7, 15, A6P_WIDTH - 14, info, 1.2)
+
+            // WCA Live QR code is assumed to be square
+            // We don't draw it if the schedule extended down too far
+            if (settings.showWcaLiveQrCode && (height + 10) < A6P_HEIGHT - 30) {
+                doc.addImage($("#qrcode-img")[0], "PNG", A6P_WIDTH - 25, A6P_HEIGHT - 25, 20, 20, "qrcode", "SLOW")
+                doc.setFontSize(13)
+                doc.setFont("NotoSans-Regular")
+                let wcaLiveLines = doc.splitTextToSize(settings.qrcodeMessage, A6P_WIDTH - 35)
+                let textHeight = wcaLiveLines.length * 6
+                let textStart = A6P_HEIGHT - 20 + ((20 - textHeight) / 2)
+                for (let i = 0; i < wcaLiveLines.length; i++) {
+                    doc.text(wcaLiveLines[i], A6P_WIDTH - 28, textStart + (i * 6), {
+                        align: "right",
+                    })
+                }
             }
         }
 
@@ -1098,6 +1122,9 @@ function makeDocument(preview = false) {
             if (a.registration.status == "accepted") {
                 return true
             }
+        } else if (a.roles && (a.roles.includes("organizer") || a.roles.includes("delegate"))) {
+            // Also include non-competing organizers and delegates
+            return true
         }
         return false
     })
@@ -1113,13 +1140,18 @@ function makeDocument(preview = false) {
     } else {
         // Normally we sort by name/newcomer status
         persons.sort((a, b) => {
+            let aCat = 0, bCat = 0
+            if (a.registration == null) {aCat = 2}
+            if (b.registration == null) {bCat = 2}
             if (template.newcomersFirst) {
-                if (a.wcaId == null && b.wcaId != null) {
-                    return -1
-                }
-                if (a.wcaId != null && b.wcaId == null) {
-                    return 1
-                }
+                if (a.wcaId != null && aCat === 0) {aCat = 1}
+                if (b.wcaId != null && bCat === 0) {bCat = 1}
+            }
+            if (aCat < bCat) {
+                return -1
+            }
+            if (aCat > bCat) {
+                return 1
             }
             if (a.name < b.name) {
                 return -1
@@ -1149,7 +1181,7 @@ function makeA6LandscapeBadges() {
     // Keep track of pages and badges
     let index = 0
     while (true) {
-        if (index >= (persons.length + 1)) {
+        if (index >= (persons.length + settings.placeholderQuantity)) {
             break
         }
 
@@ -1178,13 +1210,19 @@ function makeA4LandscapeBadges() {
     // Keep track of pages and badges
     let index = 0
     while (true) {
-        if (index >= (persons.length + 1)) {
+        if (index >= (persons.length + settings.placeholderQuantity)) {
             globalDoc.saveGraphicsState()
             globalDoc.setLineWidth(0.25)
             globalDoc.setLineDash([1])
             globalDoc.setDrawColor(128, 128, 128)
             globalDoc.line(A4L_WIDTH / 2, 0, A4L_WIDTH / 2, A4L_HEIGHT)
             globalDoc.line(0, A4L_HEIGHT / 2, A4L_WIDTH, A4L_HEIGHT / 2)
+            if (settings.drawOuterBorders) {
+                globalDoc.line(0, 0, A4L_WIDTH, 0)
+                globalDoc.line(0, A4L_HEIGHT, A4L_WIDTH, A4L_HEIGHT)
+                globalDoc.line(0, 0, 0, A4L_HEIGHT)
+                globalDoc.line(A4L_WIDTH, 0, A4L_WIDTH, A4L_HEIGHT)
+            }
             globalDoc.restoreGraphicsState()
             break
         }
@@ -1197,6 +1235,12 @@ function makeA4LandscapeBadges() {
             globalDoc.setDrawColor(128, 128, 128)
             globalDoc.line(A4L_WIDTH / 2, 0, A4L_WIDTH / 2, A4L_HEIGHT)
             globalDoc.line(0, A4L_HEIGHT / 2, A4L_WIDTH, A4L_HEIGHT / 2)
+            if (settings.drawOuterBorders) {
+                globalDoc.line(0, 0, A4L_WIDTH, 0)
+                globalDoc.line(0, A4L_HEIGHT, A4L_WIDTH, A4L_HEIGHT)
+                globalDoc.line(0, 0, 0, A4L_HEIGHT)
+                globalDoc.line(A4L_WIDTH, 0, A4L_WIDTH, A4L_HEIGHT)
+            }
             globalDoc.restoreGraphicsState()
             globalDoc.addPage("a4", "l")
         }
@@ -1226,7 +1270,7 @@ function makeA6PortraitBadges() {
     // Keep track of pages and badges
     let index = 0
     while (true) {
-        if (index >= (persons.length + 1)) {
+        if (index >= (persons.length + settings.placeholderQuantity)) {
             break
         }
 
@@ -1255,13 +1299,19 @@ function makeA4PortraitBadges() {
     // Keep track of pages and badges
     let index = 0
     while (true) {
-        if (index >= (persons.length + 1)) {
+        if (index >= (persons.length + settings.placeholderQuantity)) {
             globalDoc.saveGraphicsState()
             globalDoc.setLineWidth(0.25)
             globalDoc.setLineDash([1])
             globalDoc.setDrawColor(128, 128, 128)
             globalDoc.line(A4L_WIDTH / 2, 0, A4L_WIDTH / 2, A4L_HEIGHT)
             globalDoc.line(0, A4L_HEIGHT / 2, A4L_WIDTH, A4L_HEIGHT / 2)
+            if (settings.drawOuterBorders) {
+                globalDoc.line(0, 0, A4L_WIDTH, 0)
+                globalDoc.line(0, A4L_HEIGHT, A4L_WIDTH, A4L_HEIGHT)
+                globalDoc.line(0, 0, 0, A4L_HEIGHT)
+                globalDoc.line(A4L_WIDTH, 0, A4L_WIDTH, A4L_HEIGHT)
+            }
             globalDoc.restoreGraphicsState()
             break
         }
@@ -1274,6 +1324,12 @@ function makeA4PortraitBadges() {
             globalDoc.setDrawColor(128, 128, 128)
             globalDoc.line(A4L_WIDTH / 2, 0, A4L_WIDTH / 2, A4L_HEIGHT)
             globalDoc.line(0, A4L_HEIGHT / 2, A4L_WIDTH, A4L_HEIGHT / 2)
+            if (settings.drawOuterBorders) {
+                globalDoc.line(0, 0, A4L_WIDTH, 0)
+                globalDoc.line(0, A4L_HEIGHT, A4L_WIDTH, A4L_HEIGHT)
+                globalDoc.line(0, 0, 0, A4L_HEIGHT)
+                globalDoc.line(A4L_WIDTH, 0, A4L_WIDTH, A4L_HEIGHT)
+            }
             globalDoc.restoreGraphicsState()
             globalDoc.addPage("a4", "l")
         }
@@ -1303,13 +1359,19 @@ function makeLetterPortraitBadges() {
     // Keep track of pages and badges
     let index = 0
     while (true) {
-        if (index >= (persons.length + 1)) {
+        if (index >= (persons.length + settings.placeholderQuantity)) {
             globalDoc.saveGraphicsState()
             globalDoc.setLineWidth(0.25)
             globalDoc.setLineDash([1])
             globalDoc.setDrawColor(128, 128, 128)
             globalDoc.line(LETTERL_WIDTH / 2, 0, LETTERL_WIDTH / 2, LETTERL_HEIGHT)
             globalDoc.line(0, LETTERL_HEIGHT / 2, LETTERL_WIDTH, LETTERL_HEIGHT / 2)
+            if (settings.drawOuterBorders) {
+                globalDoc.line(0, 0, LETTERL_WIDTH, 0)
+                globalDoc.line(0, LETTERL_HEIGHT, LETTERL_WIDTH, LETTERL_HEIGHT)
+                globalDoc.line(0, 0, 0, LETTERL_HEIGHT)
+                globalDoc.line(LETTERL_WIDTH, 0, LETTERL_WIDTH, LETTERL_HEIGHT)
+            }
             globalDoc.restoreGraphicsState()
             break
         }
@@ -1322,6 +1384,12 @@ function makeLetterPortraitBadges() {
             globalDoc.setDrawColor(128, 128, 128)
             globalDoc.line(LETTERL_WIDTH / 2, 0, LETTERL_WIDTH / 2, LETTERL_HEIGHT)
             globalDoc.line(0, LETTERL_HEIGHT / 2, LETTERL_WIDTH, LETTERL_HEIGHT / 2)
+            if (settings.drawOuterBorders) {
+                globalDoc.line(0, 0, LETTERL_WIDTH, 0)
+                globalDoc.line(0, LETTERL_HEIGHT, LETTERL_WIDTH, LETTERL_HEIGHT)
+                globalDoc.line(0, 0, 0, LETTERL_HEIGHT)
+                globalDoc.line(LETTERL_WIDTH, 0, LETTERL_WIDTH, LETTERL_HEIGHT)
+            }
             globalDoc.restoreGraphicsState()
             globalDoc.addPage("letter", "l")
         }
@@ -1351,13 +1419,19 @@ function makeLetterLandscapeBadges() {
     // Keep track of pages and badges
     let index = 0
     while (true) {
-        if (index >= (persons.length + 1)) {
+        if (index >= (persons.length + settings.placeholderQuantity)) {
             globalDoc.saveGraphicsState()
             globalDoc.setLineWidth(0.25)
             globalDoc.setLineDash([1])
             globalDoc.setDrawColor(128, 128, 128)
             globalDoc.line(LETTERL_WIDTH / 2, 0, LETTERL_WIDTH / 2, LETTERL_HEIGHT)
             globalDoc.line(0, LETTERL_HEIGHT / 2, LETTERL_WIDTH, LETTERL_HEIGHT / 2)
+            if (settings.drawOuterBorders) {
+                globalDoc.line(0, 0, LETTERL_WIDTH, 0)
+                globalDoc.line(0, LETTERL_HEIGHT, LETTERL_WIDTH, LETTERL_HEIGHT)
+                globalDoc.line(0, 0, 0, LETTERL_HEIGHT)
+                globalDoc.line(LETTERL_WIDTH, 0, LETTERL_WIDTH, LETTERL_HEIGHT)
+            }
             globalDoc.restoreGraphicsState()
             break
         }
@@ -1370,6 +1444,12 @@ function makeLetterLandscapeBadges() {
             globalDoc.setDrawColor(128, 128, 128)
             globalDoc.line(LETTERL_WIDTH / 2, 0, LETTERL_WIDTH / 2, LETTERL_HEIGHT)
             globalDoc.line(0, LETTERL_HEIGHT / 2, LETTERL_WIDTH, LETTERL_HEIGHT / 2)
+            if (settings.drawOuterBorders) {
+                globalDoc.line(0, 0, LETTERL_WIDTH, 0)
+                globalDoc.line(0, LETTERL_HEIGHT, LETTERL_WIDTH, LETTERL_HEIGHT)
+                globalDoc.line(0, 0, 0, LETTERL_HEIGHT)
+                globalDoc.line(LETTERL_WIDTH, 0, LETTERL_WIDTH, LETTERL_HEIGHT)
+            }
             globalDoc.restoreGraphicsState()
             globalDoc.addPage("letter", "l")
         }
@@ -1399,7 +1479,7 @@ function makeFourBySixPortraitBadges() {
     // Keep track of pages and badges
     let index = 0
     while (true) {
-        if (index >= (persons.length + 1)) {
+        if (index >= (persons.length + settings.placeholderQuantity)) {
             break
         }
 
@@ -1428,7 +1508,7 @@ function makeFourBySixLandscapeBadges() {
     // Keep track of pages and badges
     let index = 0
     while (true) {
-        if (index >= (persons.length + 1)) {
+        if (index >= (persons.length + settings.placeholderQuantity)) {
             break
         }
 
@@ -1462,7 +1542,7 @@ function makeLetterSmallPortraitBadges() {
     // Keep track of pages and badges
     let index = 0
     while (true) {
-        if (index >= (persons.length + 1)) {
+        if (index >= (persons.length + settings.placeholderQuantity)) {
             globalDoc.saveGraphicsState()
             globalDoc.setLineWidth(0.25)
             globalDoc.setLineDash([1])
@@ -1526,7 +1606,7 @@ function makeChampionshipPortraitBadges() {
     // Keep track of pages and badges
     let index = 0
     while (true) {
-        if (index >= (persons.length + 1)) {
+        if (index >= (persons.length + settings.placeholderQuantity)) {
             break
         }
 
