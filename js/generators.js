@@ -59,6 +59,8 @@ function generatePersonInformation(index) {
             role = "trainee-delegate"
         } else if (persons[index].roles.find((r) => { return r == "organizer" })) {
             role = "organizer"
+        } else if (!persons[index].registration.isCompeting) {
+            role = "staff"
         }
 
         // If a schedule table exists, create a personal schedule for each day
@@ -684,6 +686,9 @@ function addPortraitNameBadgeWithDimensions(doc, index, badgeWidth, badgeHeight,
             } else if (info.role == "organizer") {
                 doc.setTextColor(0, 196, 0)
                 nameText = "ORGANIZER"
+            } else if (info.role == "staff") {
+                doc.setTextColor(146, 0, 191)
+                nameText = "STAFF"
             } else if (info.wcaid == null) {
                 doc.setTextColor(0, 0, 196)
                 nameText = "NEWCOMER"
@@ -822,6 +827,9 @@ function addLandscapeNameBadgeWithDimensions(doc, index, badgeWidth, badgeHeight
             } else if (info.role == "organizer") {
                 doc.setTextColor(0, 160, 0)
                 nameText = "ORGANIZER"
+            } else if (info.role == "staff") {
+                doc.setTextColor(146, 0, 191)
+                nameText = "STAFF"
             } else if (info.wcaid == null) {
                 doc.setTextColor(0, 0, 196)
                 nameText = "NEWCOMER"
@@ -947,6 +955,9 @@ function addChampionshipPortraitNameBadge(doc, index) {
             } else if (info.role == "organizer") {
                 doc.setTextColor(0, 160, 0)
                 nameText = "ORGANIZER"
+            } else if (info.role == "staff") {
+                doc.setTextColor(146, 0, 191)
+                nameText = "STAFF"
             } else if (info.wcaid == null) {
                 doc.setTextColor(0, 0, 196)
                 nameText = "NEWCOMER"
