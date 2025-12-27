@@ -90,6 +90,7 @@ const EVENT_FORMAT_MAP = {
     "1": "Best time of:",
     "2": "Best time of:",
     "3": "Best time of:",
+    "5": "Best time of:",
 }
 
 const EVENT_CHARACTERS = {
